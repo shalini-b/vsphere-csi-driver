@@ -1,6 +1,16 @@
-# vSphere CSI Driver - Offline Volume Expansion
+# vSphere CSI Driver - Volume Expansion
 
-CSI Volume Expansion was introduced as an alpha feature in Kubernetes 1.14 and it was promoted to beta in Kubernetes 1.16. The vSphere CSI driver currently extends this support for dynamically/statically created offline block volumes only i.e allows a block volume to be extended when it is not attached to a node. Check the [supported features](../supported_features_matrix.md) section to verify if your environment conforms to all the required versions and the [known issues](../known_issues.md) section to see if this feature caters to your requirement. Note that offline volume expansion is available from vSphere CSI v2.0 onwards in Vanilla Kubernetes and v2.1 onwards in Tanzu Kubernetes Grid Service (TKGS). Volume expansion is currently not supported in the Supervisor cluster.
+CSI Volume Expansion was introduced as an alpha feature in Kubernetes 1.14 and it was promoted to beta in Kubernetes 1.16. The vSphere CSI driver supports volume expansion for dynamically/statically created **block** volumes only. Kubernetes supports two modes of volume expansion - offline and online. When the PVC is being used by a Pod i.e it is mounted on a node, the resulting volume expansion operation is termed as an online expansion. In all other cases, it is an offline expansion. Depending upon the kubernetes flavor and the mode of volume expansion required for your use case, refer to the table below to know the minimum version of the vSphere CSI driver to be used.
+
+| vSphere CSI flavor                                              | Vanilla                     |      Supervisor cluster                    | Tanzu Kubernetes Grid Service (TKGS) | 
+|-----------------------------------------------------|-----------------------------------|--------------------------------------|----------------------------|
+| Offline volume expansion support                                               | vSphere CSI driver v2.0 and above | vSphere version 7.0U2 and above | vSphere version 7.0U1 and above               |
+|         Online volume expansion support                                            |    vSphere CSI driver v2.2 and above           |    vSphere version 7.0U2 and above                                  |     vSphere version 7.0U2 and above                       |                       |
+
+
+**NOTE**: vSphere CSI driver v2.2 is not yet released. 
+
+For more information, check the [supported features](../supported_features_matrix.md) section to verify if your environment conforms to all the required versions and the [known issues](../known_issues.md) section to see if this feature caters to your requirement. 
 
 ## Feature Gate
 
@@ -12,9 +22,9 @@ An external-resizer sidecar container implements the logic of watching the Kuber
 
 ## Requirements
 
-If you are using TKGS and your environment adheres to the required kubernetes and vSphere CSI driver versions mentioned above skip this section and directly proceed to the `Expand PVC Example` section below to use this feature.
+If you are either on the supervisor cluster or on TKGS, check if your environment adheres to the required kubernetes and vSphere CSI driver versions mentioned above and skip this section to directly proceed to the `Expand PVC` section below to use this feature.
 
-However, in order to try out this feature using the vanilla kubernetes driver, modify the StorageClass definition as mentioned below in your environment.
+However, in order to try this feature out on the vanilla kubernetes driver, you need to modify the StorageClass definition in your environment as mentioned below.
 
 ### StorageClass
 
@@ -31,17 +41,29 @@ allowVolumeExpansion: true
 
 Proceed to create/edit a PVC by using this storage class.
 
-## Expand PVC Example
+## Expand PVC
 
-Prior to increasing the size of a PVC make sure that the PVC is bound and is not attached to a Pod as only offline volume expansion is supported.
+Prior to increasing the size of a PVC make sure that the PVC is in `Bound` state. 
 
-Patch the PVC to increase its request size:
+### Online mode
+
+Patch the PVC to increase its requested storage size (in this case, to `2Gi`):
 
 ```bash
 kubectl patch pvc example-block-pvc -p '{"spec": {"resources": {"requests": {"storage": "2Gi"}}}}'
 ```
 
-This will trigger an expansion in the volume associated with the PVC in vSphere Cloud Native Storage which finally gets reflected on the capacity of the corresponding PV object. Note that the capacity of PVC will not change until the PVC is attached to a node i.e used by a Pod.
+
+
+### Offline mode
+
+Patch the PVC to increase its requested storage size (in this case, to `2Gi`):
+
+```bash
+kubectl patch pvc example-block-pvc -p '{"spec": {"resources": {"requests": {"storage": "2Gi"}}}}'
+```
+
+This will trigger an expansion in the volume associated with the PVC in vSphere Cloud Native Storage which finally gets reflected on the capacity of the corresponding PV object. Note that the capacity of the PVC will not change until the PVC is used by a Pod i.e mounted on a node.
 
 ```bash
 kubectl get pv
@@ -100,4 +122,4 @@ NAME                                       CAPACITY ACCESS MODES RECLAIM POLICY 
 pvc-24114458-9753-428e-9c90-9f568cb25788   2Gi           RWO        Delete      Bound    default/example-block-pvc example-block-sc              2m3s
 ```
 
-You will notice that the capacity of PVC has been modified and the `FilesystemResizePending` condition has been removed from the PVC. Volume expansion is complete.
+You will notice that the capacity of PVC has been modified and the `FilesystemResizePending` condition has been removed from the PVC. Offline volume expansion is complete.
