@@ -722,7 +722,6 @@ func (s *service) NodeGetInfo(
 			accessibleTopology = make(map[string]string)
 			accessibleTopology[v1.LabelZoneRegion] = region
 			accessibleTopology[v1.LabelZoneFailureDomain] = zone
-			accessibleTopology["test-label"] = "test-value"
 		}
 	}
 	if len(accessibleTopology) > 0 {
