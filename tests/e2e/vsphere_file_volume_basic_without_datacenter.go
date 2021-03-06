@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
@@ -31,16 +30,20 @@ import (
 var _ = ginkgo.Describe("[csi-file-vanilla] Basic Testing without datacenter", func() {
 	f := framework.NewDefaultFramework("file-volume-basic")
 	var (
-		client       clientset.Interface
-		namespace    string
-		originalConf string
-		ctx          context.Context
-		cancel       context.CancelFunc
+		client                 clientset.Interface
+		namespace              string
+		csiControllerNamespace string
+		originalConf           string
+		ctx                    context.Context
+		cancel                 context.CancelFunc
 	)
 
 	ginkgo.BeforeEach(func() {
 		client = f.ClientSet
 		namespace = f.Namespace.Name
+		if vanillaCluster {
+			csiControllerNamespace = GetAndExpectStringEnvVar(envCSINamespace)
+		}
 		bootstrap(true)
 		nodeList, err := fnodes.GetReadySchedulableNodes(f.ClientSet)
 		framework.ExpectNoError(err, "Unable to find ready and schedulable Node")
@@ -51,18 +54,18 @@ var _ = ginkgo.Describe("[csi-file-vanilla] Basic Testing without datacenter", f
 
 	ginkgo.AfterEach(func() {
 		ginkgo.By("Reverting the secret change back to normal")
-		currentSecret, err := client.CoreV1().Secrets(kubeSystemNamespace).Get(ctx, configSecret, metav1.GetOptions{})
+		currentSecret, err := client.CoreV1().Secrets(csiControllerNamespace).Get(ctx, configSecret, metav1.GetOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		currentSecret.Data[vsphereCloudProviderConfiguration] = []byte(originalConf)
-		_, err = client.CoreV1().Secrets(kubeSystemNamespace).Update(ctx, currentSecret, metav1.UpdateOptions{})
+		_, err = client.CoreV1().Secrets(csiControllerNamespace).Update(ctx, currentSecret, metav1.UpdateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		ginkgo.By("Restarting the controller by toggling the replica count")
 		ginkgo.By("Bringing the csi-controller down")
-		bringDownCsiController(client, kubeSystemNamespace)
+		bringDownCsiController(client, csiControllerNamespace)
 		ginkgo.By("Bringing the csi-controller up")
-		bringUpCsiController(client, kubeSystemNamespace)
+		bringUpCsiController(client, csiControllerNamespace)
 
 		cancel()
 	})
@@ -87,7 +90,7 @@ var _ = ginkgo.Describe("[csi-file-vanilla] Basic Testing without datacenter", f
 
 		ctx, cancel = context.WithCancel(context.Background())
 
-		secret, err := client.CoreV1().Secrets(kubeSystemNamespace).Get(ctx, configSecret, metav1.GetOptions{})
+		secret, err := client.CoreV1().Secrets(csiControllerNamespace).Get(ctx, configSecret, metav1.GetOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		originalConf := string(secret.Data[vsphereCloudProviderConfiguration])
@@ -102,14 +105,14 @@ var _ = ginkgo.Describe("[csi-file-vanilla] Basic Testing without datacenter", f
 
 		ginkgo.By("Updating the secret to reflect the change")
 		secret.Data[vsphereCloudProviderConfiguration] = []byte(modifiedConf)
-		_, err = client.CoreV1().Secrets(kubeSystemNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+		_, err = client.CoreV1().Secrets(csiControllerNamespace).Update(ctx, secret, metav1.UpdateOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		ginkgo.By("Restarting the controller by toggling the replica count")
 		ginkgo.By("Bringing the csi-controller down")
-		bringDownCsiController(client, kubeSystemNamespace)
+		bringDownCsiController(client, csiControllerNamespace)
 		ginkgo.By("Bringing the csi-controller up")
-		bringUpCsiController(client, kubeSystemNamespace)
+		bringUpCsiController(client, csiControllerNamespace)
 
 		testHelperForCreateFileVolumeWithDatastoreURLInSC(f, client, namespace, v1.ReadWriteMany, datastoreURL, true)
 
