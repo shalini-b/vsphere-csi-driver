@@ -21,6 +21,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/vmware/govmomi/cns"
+
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
 )
 
@@ -52,6 +54,8 @@ type VirtualCenterManager interface {
 	IsvSANFileServicesSupported(ctx context.Context, host string) (bool, error)
 	// IsExtendVolumeSupported checks if extend volume is supported or not.
 	IsExtendVolumeSupported(ctx context.Context, host string) (bool, error)
+	// IsOnlineExtendVolumeSupported checks if online extend volume is supported or not on the vCenter Host
+	IsOnlineExtendVolumeSupported(ctx context.Context, host string) (bool, error)
 }
 
 var (
@@ -119,22 +123,23 @@ func (m *defaultVirtualCenterManager) UnregisterVirtualCenter(ctx context.Contex
 	log := logger.GetLogger(ctx)
 	vc, err := m.GetVirtualCenter(ctx, host)
 	if err != nil {
-		if err == ErrVCNotFound {
-			log.Warnf("failed to find vCenter: %q Assuming vCenter is already unregistered.", host)
-			return nil
-		}
+		log.Errorf("failed to find VC %s, couldn't unregister", host)
 		return err
 	}
-	if err = vc.DisconnectPbm(ctx); err != nil {
-		log.Warnf("failed to disconnect VC pbm %s, couldn't unregister", host)
+	if vc != nil {
+		if err = vc.DisconnectPbm(ctx); err != nil {
+			log.Warnf("failed to disconnect VC pbm %s, couldn't unregister", host)
+		}
+		if err = vc.Disconnect(ctx); err != nil {
+			log.Warnf("failed to disconnect VC %s, couldn't unregister", host)
+		}
+		vc.DisconnectCns(ctx)
+		m.virtualCenters.Delete(host)
+		log.Infof("Successfully unregistered VC %s", host)
+		return nil
 	}
-	if err = vc.Disconnect(ctx); err != nil {
-		log.Warnf("failed to disconnect VC %s, couldn't unregister", host)
-	}
-	vc.DisconnectCns(ctx)
-	m.virtualCenters.Delete(host)
-	log.Infof("Successfully unregistered VC %s", host)
-	return nil
+	log.Warnf("failed to find VC %s, couldn't unregister", host)
+	return err
 }
 
 func (m *defaultVirtualCenterManager) UnregisterAllVirtualCenters(ctx context.Context) error {
@@ -142,7 +147,7 @@ func (m *defaultVirtualCenterManager) UnregisterAllVirtualCenters(ctx context.Co
 	log := logger.GetLogger(ctx)
 	m.virtualCenters.Range(func(hostInf, _ interface{}) bool {
 		if err = m.UnregisterVirtualCenter(ctx, hostInf.(string)); err != nil {
-			log.Warnf("failed to unregister vCenter: %q, err: %+v", hostInf.(string), err)
+			log.Warnf("failed to unregister VC %v", hostInf)
 		}
 		return true
 	})
@@ -169,4 +174,22 @@ func (m *defaultVirtualCenterManager) IsExtendVolumeSupported(ctx context.Contex
 		return false, err
 	}
 	return !is67u3Release, nil
+}
+
+// IsOnlineExtendVolumeSupported checks if online extend volume is supported or not.
+func (m *defaultVirtualCenterManager) IsOnlineExtendVolumeSupported(ctx context.Context, host string) (bool, error) {
+	log := logger.GetLogger(ctx)
+
+	// Get VC instance
+	vcenter, err := m.GetVirtualCenter(ctx, host)
+	if err != nil {
+		log.Errorf("Failed to get vCenter. Err: %v", err)
+		return false, err
+	}
+	vCenterVersion := vcenter.Client.Version
+	if vCenterVersion != cns.ReleaseVSAN67u3 && vCenterVersion != cns.ReleaseVSAN70 && vCenterVersion != cns.ReleaseVSAN70u1 {
+		return true, nil
+	}
+	log.Infof("Online volume expansion is not supported on vCenter version %q", vCenterVersion)
+	return false, nil
 }

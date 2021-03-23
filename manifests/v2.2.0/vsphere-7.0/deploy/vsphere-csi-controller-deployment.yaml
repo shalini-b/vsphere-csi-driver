@@ -56,6 +56,9 @@ spec:
             - "--kube-api-qps=100"
             - "--kube-api-burst=100"
             - "--leader-election"
+            # Uncomment the line below to increase performance of online
+            # resize in vSphere versions 7.0U2 or above
+            # - "--handle-volume-inuse-error=false"
           env:
             - name: ADDRESS
               value: /csi/csi.sock
@@ -70,17 +73,13 @@ spec:
           imagePullPolicy: "Always"
           env:
             - name: CSI_ENDPOINT
-              value: unix:///csi/csi.sock
+              value: unix:///var/lib/csi/sockets/pluginproxy/csi.sock
             - name: X_CSI_MODE
               value: "controller"
             - name: VSPHERE_CSI_CONFIG
               value: "/etc/cloud/csi-vsphere.conf"
             - name: LOGGER_LEVEL
               value: "PRODUCTION" # Options: DEVELOPMENT, PRODUCTION
-            - name: INCLUSTER_CLIENT_QPS
-              value: "100"
-            - name: INCLUSTER_CLIENT_BURST
-              value: "100"
             - name: CSI_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -91,7 +90,7 @@ spec:
             - mountPath: /etc/cloud
               name: vsphere-config-volume
               readOnly: true
-            - mountPath: /csi
+            - mountPath: /var/lib/csi/sockets/pluginproxy/
               name: socket-dir
           ports:
             - name: healthz
@@ -134,10 +133,6 @@ spec:
               value: "/etc/cloud/csi-vsphere.conf"
             - name: LOGGER_LEVEL
               value: "PRODUCTION" # Options: DEVELOPMENT, PRODUCTION
-            - name: INCLUSTER_CLIENT_QPS
-              value: "100"
-            - name: INCLUSTER_CLIENT_BURST
-              value: "100"
             - name: CSI_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -175,8 +170,8 @@ spec:
 apiVersion: v1
 data:
   "csi-migration": "false"
-  "csi-auth-check": "true"
-  "online-volume-extend": "false"
+  "csi-auth-check": "false"
+  "online-volume-extend": "true"
 kind: ConfigMap
 metadata:
   name: internal-feature-states.csi.vsphere.vmware.com
