@@ -53,6 +53,9 @@ rules:
   - apiGroups: ["cns.vmware.com"]
     resources: ["cnsvolumeoperationrequests"]
     verbs: ["create", "get", "list", "update", "delete"]
+  - apiGroups: [ "cns.vmware.com" ]
+    resources: [ "csinodetopologies" ]
+    verbs: ["get", "update", "watch", "list"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

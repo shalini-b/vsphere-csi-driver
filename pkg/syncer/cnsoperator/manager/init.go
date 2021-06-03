@@ -188,6 +188,10 @@ func InitCnsOperator(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavo
 		log.Errorf("failed to set the scheme for Cns operator. Err: %+v", err)
 		return err
 	}
+	if err = csinodetopologyv1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
+		log.Errorf("failed to add CSINodeTopology to scheme with error: %+v", err)
+		return err
+	}
 
 	// Setup all Controllers
 	if err := controller.AddToManager(mgr, clusterFlavor, cnsOperator.configInfo, volumeManager); err != nil {
