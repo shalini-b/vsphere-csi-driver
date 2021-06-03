@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/common/commonco"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
+	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/vanilla"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/internalapis"
 	triggercsifullsyncv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/internalapis/cnsoperator/triggercsifullsync/v1alpha1"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/internalapis/csinodetopology"
@@ -165,6 +166,14 @@ func InitCnsOperator(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavo
 				csinodetopologyv1alpha1.GroupName, csinodetopologyv1alpha1.Version, apiextensionsv1beta1.ClusterScoped)
 			if err != nil {
 				log.Errorf("Failed to create %q CRD. Error: %+v", csinodetopology.CRDSingular, err)
+				return err
+			}
+			// Initialize node manager so that CSINodeTopology controller
+			// can retrieve NodeVM using the NodeID in the spec
+			nodeMgr := &vanilla.Nodes{}
+			err = nodeMgr.Initialize(ctx)
+			if err != nil {
+				log.Errorf("failed to initialize nodeManager. Error: %+v", err)
 				return err
 			}
 		}

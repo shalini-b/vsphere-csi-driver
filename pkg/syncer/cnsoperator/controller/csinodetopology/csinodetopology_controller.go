@@ -18,6 +18,7 @@ package csinodetopology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -50,9 +51,7 @@ import (
 	"sigs.k8s.io/vsphere-csi-driver/pkg/syncer"
 )
 
-const (
-	defaultMaxWorkerThreadsForCSINodeTopology = 1
-)
+const defaultMaxWorkerThreadsForCSINodeTopology = 1
 
 // backOffDuration is a map of csinodetopology instance name to the time after which a request
 // for this instance will be requeued.
@@ -131,13 +130,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			return true
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			newObj, ok := e.ObjectNew.(*csinodetopologyv1alpha1.CSINodeTopology)
-			if newObj == nil || !ok {
-				return false
-			}
-			// Return true if the Status.Status in newObj is not "Success"
-			// Return false for all other updates
-			return newObj.Status.Status != csinodetopologyv1alpha1.CSINodeTopologySuccess
+			// The CO calls NodeGetInfo API just once during the node registration,
+			// therefore we do not support updates to the spec after the CR has been reconciled.
+			return false
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			// Instances are deleted by the garbage collector automatically after the corresponding NodeVM is deleted.
@@ -196,9 +191,9 @@ func (r *ReconcileCSINodeTopology) Reconcile(ctx context.Context, request reconc
 	nodeVM, err := nodeManager.GetNodeByName(ctx, nodeID)
 	if err != nil {
 		// If nodeVM not found, ignore reconcile call
-		log.Warnf("Ignoring update to CSINodeTopology CR with name %s as corresponding NodeVM seems to be deleted. " +
+		log.Warnf("Ignoring update to CSINodeTopology CR with name %s as corresponding NodeVM seems to be deleted. "+
 			"Error: %v", nodeID, err)
-		err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError,
+		_ = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError,
 			fmt.Sprintf("Failed to find NodeVM with ID: %q", nodeID))
 		return reconcile.Result{}, nil
 	}
@@ -215,9 +210,9 @@ func (r *ReconcileCSINodeTopology) Reconcile(ctx context.Context, request reconc
 	// Fetch vsphere config
 	cfg, err := common.GetConfig(ctx)
 	if err != nil {
-		msg := fmt.Sprintf("Failed to read CNS config")
+		msg := "Failed to read CNS config"
 		log.Errorf("%s. Error: %v", msg, err)
-		err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError, msg)
+		_ = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError, msg)
 		return reconcile.Result{RequeueAfter: timeout}, nil
 	}
 	// Retrieve topology labels for nodeVM
@@ -231,38 +226,38 @@ func (r *ReconcileCSINodeTopology) Reconcile(ctx context.Context, request reconc
 		}
 	} else if cfg.Labels.Zone != "" && cfg.Labels.Region != "" {
 		log.Infof("Detected a topology aware cluster")
-		instance.Status.TopologyLabels = make([]csinodetopologyv1alpha1.TopologyLabel, 0)
 
 		// Fetch topology labels for nodeVM
-		err := updateNodeTopologyInfo(ctx, nodeVM, cfg, instance.Status.TopologyLabels)
+		topologyLabels, err := getNodeTopologyInfo(ctx, nodeVM, cfg)
 		if err != nil {
 			msg := fmt.Sprintf("failed to fetch topology information for the nodeVM with ID %q", nodeID)
 			log.Errorf("%s. Error: %v", msg, err)
-			err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError,  msg)
+			_ = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError, msg)
 			return reconcile.Result{RequeueAfter: timeout}, nil
 		}
 
 		// Raise error if nodeVM does not have a topology label associated with each category in the
 		// vSphere config secret `Labels` section. For now, as we support only zone, region, hardcoded the value to 2
 		// TODO: Count the number of topology categories given and verify against that number.
-		if len(instance.Status.TopologyLabels) != 2 {
-			msg := fmt.Sprintf("Detected a topology aware cluster. However, nodeVM with ID %q does not have a " +
+		if len(topologyLabels) != 2 {
+			msg := fmt.Sprintf("Detected a topology aware cluster. However, nodeVM with ID %q does not have a "+
 				"topology label for each category mentioned under the vSphere CSI config secret `Labels` section.", nodeID)
 			log.Error(msg)
-			err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError,  msg)
+			_ = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError, msg)
 			return reconcile.Result{RequeueAfter: timeout}, nil
 		}
 
 		// Update CSINodeTopology instance
-		err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologySuccess,  "")
+		instance.Status.TopologyLabels = topologyLabels
+		err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologySuccess, "")
 		if err != nil {
 			return reconcile.Result{RequeueAfter: timeout}, nil
 		}
 	} else {
-		msg := fmt.Sprint("Missing zone or region information in vSphere CSI config `Labels` section")
+		msg := "missing zone or region information in vSphere CSI config `Labels` section"
 		log.Error(msg)
-		err = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError,  msg)
-		return reconcile.Result{RequeueAfter: timeout}, nil
+		_ = updateCRStatus(ctx, r, instance, csinodetopologyv1alpha1.CSINodeTopologyError, msg)
+		return reconcile.Result{}, errors.New(msg)
 	}
 
 	// On successful event, remove instance from backOffDuration
@@ -302,22 +297,22 @@ func updateCRStatus(ctx context.Context, r *ReconcileCSINodeTopology, instance *
 	return nil
 }
 
-func updateNodeTopologyInfo(ctx context.Context, nodeVM *cnsvsphere.VirtualMachine, cfg *cnsconfig.Config,
-	topologyLabels []csinodetopologyv1alpha1.TopologyLabel) error {
+func getNodeTopologyInfo(ctx context.Context, nodeVM *cnsvsphere.VirtualMachine, cfg *cnsconfig.Config) (
+	[]csinodetopologyv1alpha1.TopologyLabel, error) {
 	log := logger.GetLogger(ctx)
 
 	// Get VC instance
 	vcenter, err := cnsvsphere.GetVirtualCenterInstance(ctx, &cnsconfig.ConfigurationInfo{Cfg: cfg}, false)
 	if err != nil {
 		log.Errorf("failed to get virtual center instance with error: %v", err)
-		return err
+		return nil, err
 	}
 
 	// Get tag manager instance
 	tagManager, err := cnsvsphere.GetTagManager(ctx, vcenter)
 	if err != nil {
 		log.Errorf("failed to create tagManager. Err: %v", err)
-		return err
+		return nil, err
 	}
 	defer func() {
 		err := tagManager.Logout(ctx)
@@ -330,12 +325,12 @@ func updateNodeTopologyInfo(ctx context.Context, nodeVM *cnsvsphere.VirtualMachi
 	zone, region, err := nodeVM.GetZoneRegion(ctx, cfg.Labels.Zone, cfg.Labels.Region, tagManager)
 	if err != nil {
 		log.Errorf("failed to get accessibleTopology for nodeVM: %v, err: %v", nodeVM.Reference(), err)
-		return err
+		return nil, err
 	}
-	log.Infof("NodeVM %q belongs to zone: %q and region: %q", nodeVM.Name(), zone, region)
-	topologyLabels = append(topologyLabels,
-		csinodetopologyv1alpha1.TopologyLabel{Key: corev1.LabelZoneFailureDomainStable, Value: zone},
-		csinodetopologyv1alpha1.TopologyLabel{Key: corev1.LabelZoneRegionStable, Value: region},
-	)
-	return nil
+	log.Infof("NodeVM %q belongs to zone: %q and region: %q", nodeVM.Reference(), zone, region)
+	topologyLabels := []csinodetopologyv1alpha1.TopologyLabel{
+		{Key: corev1.LabelTopologyZone, Value: zone},
+		{Key: corev1.LabelTopologyRegion, Value: region},
+	}
+	return topologyLabels, nil
 }
