@@ -258,6 +258,7 @@ func NewCSINodeTopologyWatcher(ctx context.Context, config *restclient.Config) (
 	err = csinodetopologyv1alpha1.AddToScheme(scheme)
 	if err != nil {
 		log.Errorf("failed to add to scheme with err: %+v", err)
+		return nil, err
 	}
 	gvk := schema.GroupVersionKind{
 		Group:   csinodetopologyv1alpha1.GroupName,

@@ -34,6 +34,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -60,6 +61,7 @@ const (
 	dmiDir                               = "/sys/class/dmi"
 	maxAllowedBlockVolumesPerNode        = 59
 	defaultTopologyCRWatcherTimeoutInMin = 1
+	maxTopologyCRWatcherTimeoutInMin     = 2
 )
 
 type nodeStageParams struct {
@@ -656,7 +658,6 @@ func (driver *vsphereCSIDriver) NodeGetInfo(
 	if nodeName == "" {
 		return nil, logger.LogNewErrorCode(log, codes.Internal, "ENV NODE_NAME is not set")
 	}
-	// NOTE: In future, we plan to use NodeVM UUID as NodeID.
 	nodeID := nodeName
 
 	var maxVolumesPerNode int64
@@ -691,7 +692,7 @@ func (driver *vsphereCSIDriver) NodeGetInfo(
 
 	var (
 		accessibleTopology map[string]string
-		err error
+		err                error
 	)
 	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.ImprovedVolumeTopology) {
 		accessibleTopology, err = fetchTopologyLabelsUsingCR(ctx, nodeName, nodeID)
@@ -701,7 +702,7 @@ func (driver *vsphereCSIDriver) NodeGetInfo(
 		if cfgPath == "" {
 			cfgPath = cnsconfig.DefaultCloudConfigPath
 		}
-		cfg, err := cnsconfig.GetCnsconfig(ctx, cfgPath)
+		cfg, err = cnsconfig.GetCnsconfig(ctx, cfgPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				log.Infof("Config file not provided to node daemonset. Assuming non-topology aware cluster.")
@@ -734,6 +735,7 @@ func (driver *vsphereCSIDriver) NodeGetInfo(
 	return nodeInfoResponse, nil
 }
 
+// fetchTopologyLabelsUsingCR uses the CSINodeTopology CR to retrieve topology information of a node.
 func fetchTopologyLabelsUsingCR(ctx context.Context, nodeName, nodeID string) (map[string]string, error) {
 	log := logger.GetLogger(ctx)
 
@@ -761,9 +763,9 @@ func fetchTopologyLabelsUsingCR(ctx context.Context, nodeName, nodeID string) (m
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: "v1",
-					Kind: "Node",
-					Name: nodeObj.Name,
-					UID: nodeObj.UID,
+					Kind:       "Node",
+					Name:       nodeObj.Name,
+					UID:        nodeObj.UID,
 				},
 			},
 		},
@@ -811,10 +813,8 @@ func fetchTopologyLabelsUsingCR(ctx context.Context, nodeName, nodeID string) (m
 		case csinodetopologyv1alpha1.CSINodeTopologySuccess:
 			accessibleTopology := make(map[string]string)
 			topologyLabels := csiNodeTopologyInstance.Status.TopologyLabels
-			if len(topologyLabels) > 0 {
-				for _, label := range topologyLabels {
-					accessibleTopology[label.Key] = label.Value
-				}
+			for _, label := range topologyLabels {
+				accessibleTopology[label.Key] = label.Value
 			}
 			return accessibleTopology, nil
 		case csinodetopologyv1alpha1.CSINodeTopologyError:
@@ -824,9 +824,11 @@ func fetchTopologyLabelsUsingCR(ctx context.Context, nodeName, nodeID string) (m
 		}
 	}
 	return nil, logger.LogNewErrorCodef(log, codes.Internal,
-		"timed out while waiting for topology labels in CSINodeTopology instance with name %q to be updated.", nodeID)
+		"timed out while waiting for topology labels in CSINodeTopology instance with name %q to be updated.",
+		nodeID)
 }
 
+// getNodeObject fetches the node instance given the nodeName
 func getNodeObject(ctx context.Context, nodeName string) (*v1.Node, error) {
 	log := logger.GetLogger(ctx)
 
@@ -847,30 +849,37 @@ func getNodeObject(ctx context.Context, nodeName string) (*v1.Node, error) {
 
 // getCSINodeTopologyWatchTimeoutInMin returns the timeout for watching
 // on CSINodeTopology instances for any updates.
-// If environment variable NODEGETINFO_WATCH_TIMEOUT_MINUTES is set and valid,
-// return the interval value read from environment variable
-// otherwise, use the default timeout 1 min.
+// If environment variable NODEGETINFO_WATCH_TIMEOUT_MINUTES is set and
+// has a valid value between [1, 2], return the interval value read
+// from environment variable. Otherwise, use the default timeout of 1 min.
 func getCSINodeTopologyWatchTimeoutInMin(ctx context.Context) int {
 	log := logger.GetLogger(ctx)
 	watcherTimeoutInMin := defaultTopologyCRWatcherTimeoutInMin
 	if v := os.Getenv("NODEGETINFO_WATCH_TIMEOUT_MINUTES"); v != "" {
 		if value, err := strconv.Atoi(v); err == nil {
-			if value <= 0 {
-				log.Warnf("Timeout set in env variable NODEGETINFO_WATCH_TIMEOUT_MINUTES %s is equal or " +
+			switch {
+			case value <= 0:
+				log.Warnf("Timeout set in env variable NODEGETINFO_WATCH_TIMEOUT_MINUTES %s is equal or "+
 					"less than 0, will use the default timeout of %d minute(s)", v, watcherTimeoutInMin)
-			} else {
+			case value > maxTopologyCRWatcherTimeoutInMin:
+				log.Warnf("Timeout set in env variable NODEGETINFO_WATCH_TIMEOUT_MINUTES %s is equal or "+
+					"less than 0, will use the default timeout of %d minute(s)", v, watcherTimeoutInMin)
+			default:
 				watcherTimeoutInMin = value
 				log.Infof("Timeout is set to %d minute(s)", watcherTimeoutInMin)
 			}
 		} else {
-			log.Warnf("Timeout set in env variable NODEGETINFO_WATCH_TIMEOUT_MINUTES %s is invalid, " +
+			log.Warnf("Timeout set in env variable NODEGETINFO_WATCH_TIMEOUT_MINUTES %s is invalid, "+
 				"using the default timeout of %d minute(s)", v, watcherTimeoutInMin)
 		}
 	}
 	return watcherTimeoutInMin
 }
 
-func fetchTopologyLabelsUsingVCCreds(ctx context.Context, nodeID string, cfg *cnsconfig.Config) (map[string]string, error) {
+// fetchTopologyLabelsUsingVCCreds retrieves topology information of the nodes
+// using VC credentials mounted on the nodes. This approach will be deprecated soon.
+func fetchTopologyLabelsUsingVCCreds(ctx context.Context, nodeID string, cfg *cnsconfig.Config) (
+	map[string]string, error) {
 	log := logger.GetLogger(ctx)
 
 	// If zone or region are empty, return.
@@ -878,7 +887,8 @@ func fetchTopologyLabelsUsingVCCreds(ctx context.Context, nodeID string, cfg *cn
 		return nil, nil
 	}
 
-	log.Infof("Config file provided to node daemonset contains zone and region info. Assuming topology aware cluster.")
+	log.Infof("Config file provided to node daemonset contains zone and region info. " +
+		"Assuming topology aware cluster.")
 	vcenterconfig, err := cnsvsphere.GetVirtualCenterConfig(ctx, cfg)
 	if err != nil {
 		return nil, logger.LogNewErrorCodef(log, codes.Internal,
