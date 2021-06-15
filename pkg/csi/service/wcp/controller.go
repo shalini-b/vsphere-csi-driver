@@ -94,7 +94,8 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		common.CSIVolumeManagerIdempotency)
 	if idempotencyHandlingEnabled {
 		log.Info("CSI Volume manager idempotency handling feature flag is enabled.")
-		operationStore, err = cnsvolumeoperationrequest.InitVolumeOperationRequestInterface(ctx)
+		operationStore, err = cnsvolumeoperationrequest.InitVolumeOperationRequestInterface(ctx,
+			c.manager.CnsConfig.Global.CnsVolumeOperationRequestCleanupIntervalInMin)
 		if err != nil {
 			log.Errorf("failed to initialize VolumeOperationRequestInterface with error: %v", err)
 			return err
@@ -135,15 +136,7 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		// TODO: Invoke similar method for block volumes
 		go common.ComputeFSEnabledClustersToDsMap(authMgr.(*common.AuthManager), config.Global.CSIAuthCheckIntervalInMin)
 	}
-	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.CSIVolumeManagerIdempotency) {
-		log.Infof("CSI Volume manager idempotency handling feature flag is enabled.")
-		// TODO: Assign VolumeOperationRequest object to a variable
-		_, err = cnsvolumeoperationrequest.InitVolumeOperationRequestInterface(ctx)
-		if err != nil {
-			log.Errorf("failed to initialize VolumeOperationRequestInterface with error: %v", err)
-			return err
-		}
-	}
+
 	go func() {
 		for {
 			log.Debugf("Waiting for event on fsnotify watcher")
@@ -178,8 +171,8 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 							log.Infof("Successfully re-established connection with VC from: %q", cnsconfig.SupervisorCAFilePath)
 							break
 						}
-						log.Errorf("failed to re-establish VC connection. Will retry again in 5 seconds. err: %+v", reconnectVCErr)
-						time.Sleep(5 * time.Second)
+						log.Errorf("failed to re-establish VC connection. Will retry again in 60 seconds. err: %+v", reconnectVCErr)
+						time.Sleep(60 * time.Second)
 					}
 				}
 			case err, ok := <-watcher.Errors:
@@ -279,7 +272,8 @@ func (c *controller) ReloadConfiguration(reconnectToVCFromNewConfig bool) error 
 			common.CSIVolumeManagerIdempotency)
 		if idempotencyHandlingEnabled {
 			log.Info("CSI Volume manager idempotency handling feature flag is enabled.")
-			operationStore, err = cnsvolumeoperationrequest.InitVolumeOperationRequestInterface(ctx)
+			operationStore, err = cnsvolumeoperationrequest.InitVolumeOperationRequestInterface(ctx,
+				c.manager.CnsConfig.Global.CnsVolumeOperationRequestCleanupIntervalInMin)
 			if err != nil {
 				log.Errorf("failed to initialize VolumeOperationRequestInterface with error: %v", err)
 				return err
@@ -860,7 +854,7 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		volSizeBytes := int64(req.GetCapacityRange().GetRequiredBytes())
 		volSizeMB := int64(common.RoundUpSize(volSizeBytes, common.MbInBytes))
 
-		err = common.ExpandVolumeUtil(ctx, c.manager, volumeID, volSizeMB, commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.AsyncQueryVolume))
+		err = common.ExpandVolumeUtil(ctx, c.manager, volumeID, volSizeMB, commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.AsyncQueryVolume), commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.CSIVolumeManagerIdempotency))
 		if err != nil {
 			msg := fmt.Sprintf("failed to expand volume: %+q to size: %d err %+v", volumeID, volSizeMB, err)
 			log.Error(msg)
@@ -892,4 +886,9 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
 	}
 	return resp, err
+}
+
+func (c *controller) ControllerGetVolume(ctx context.Context, req *csi.ControllerGetVolumeRequest) (
+	*csi.ControllerGetVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }
