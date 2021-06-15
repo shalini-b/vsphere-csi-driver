@@ -167,7 +167,7 @@ func (volTopology *volumeTopology) GetNodeTopologyLabels(ctx context.Context, in
 
 	timeoutSeconds := int64((time.Duration(getCSINodeTopologyWatchTimeoutInMin(ctx)) * time.Minute).Seconds())
 	watchCSINodeTopology, err := volTopology.csiNodeTopologyWatcher.Watch(metav1.ListOptions{
-		FieldSelector:  fields.SelectorFromSet(fields.Set{"metadata.name": info.NodeID}).String(),
+		FieldSelector:  fields.OneTermEqualSelector("metadata.name", info.NodeName).String(),
 		TimeoutSeconds: &timeoutSeconds,
 		Watch:          true,
 	})
@@ -182,6 +182,9 @@ func (volTopology *volumeTopology) GetNodeTopologyLabels(ctx context.Context, in
 		csiNodeTopologyInstance, ok := event.Object.(*csinodetopologyv1alpha1.CSINodeTopology)
 		if !ok {
 			log.Warnf("Received unidentified object - %+v", event.Object)
+			continue
+		}
+		if csiNodeTopologyInstance.Name != info.NodeName {
 			continue
 		}
 		switch csiNodeTopologyInstance.Status.Status {
