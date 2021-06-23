@@ -113,8 +113,10 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		log.Errorf("failed to get vcenter. err=%v", err)
 		return err
 	}
-	// Check vCenter API Version
-	if err = common.CheckAPI(vc.Client.ServiceContent.About.ApiVersion); err != nil {
+	// Check vCenter API Version against 6.7.3
+	err = common.CheckAPI(vc.Client.ServiceContent.About.ApiVersion, common.MinSupportedVCenterMajor,
+		common.MinSupportedVCenterMinor, common.MinSupportedVCenterPatch)
+	if err != nil {
 		log.Errorf("checkAPI failed for vcenter API version: %s, err=%v", vc.Client.ServiceContent.About.ApiVersion, err)
 		return err
 	}
@@ -331,7 +333,7 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 			spAccessibleNodes, storagePoolType, err := getStoragePoolInfo(ctx, storagePool)
 			if err != nil {
 				return nil, logger.LogNewErrorCodef(log, codes.Internal,
-					"Error in specified StoragePool %s. Error: %+v", storagePool, err)
+					"error in specified StoragePool %s. Error: %+v", storagePool, err)
 			}
 			overlappingNodes, err := getOverlappingNodes(spAccessibleNodes, topologyRequirement)
 			if err != nil || len(overlappingNodes) == 0 {
@@ -827,7 +829,7 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		log := logger.GetLogger(ctx)
 		if !commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.VolumeExtend) {
 			return nil, logger.LogNewErrorCode(log, codes.Unimplemented,
-				"ExpandVolume feature is disabled on the cluster")
+				"expandVolume feature is disabled on the cluster")
 		}
 		log.Infof("ControllerExpandVolume: called with args %+v", *req)
 

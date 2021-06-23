@@ -140,8 +140,10 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		}
 	}
 
-	// Check vCenter API Version.
-	if err = common.CheckAPI(vc.Client.ServiceContent.About.ApiVersion); err != nil {
+	// Check vCenter API Version against 6.7.3.
+	err = common.CheckAPI(vc.Client.ServiceContent.About.ApiVersion, common.MinSupportedVCenterMajor,
+		common.MinSupportedVCenterMinor, common.MinSupportedVCenterPatch)
+	if err != nil {
 		log.Errorf("checkAPI failed for vcenter API version: %s, err=%v", vc.Client.ServiceContent.About.ApiVersion, err)
 		return err
 	}
@@ -419,7 +421,7 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 			// If zone and region label (vSphere category names) not specified in
 			// the config secret, then return NotFound error.
 			return nil, logger.LogNewErrorCode(log, codes.NotFound,
-				"Zone/Region vsphere category names not specified in the vsphere config secret")
+				"zone/region vsphere category names not specified in the vsphere config secret")
 		}
 		vcenter, err := c.manager.VcenterManager.GetVirtualCenter(ctx, c.manager.VcenterConfig.Host)
 		if err != nil {
@@ -455,7 +457,7 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 			}
 			if !isDataStoreAccessible {
 				return nil, logger.LogNewErrorCodef(log, codes.InvalidArgument,
-					"DatastoreURL: %s specified in the storage class is not accessible in the topology:[+%v]",
+					"datastore URL: %s specified in the storage class is not accessible in the topology:[+%v]",
 					createVolumeSpec.ScParams.DatastoreURL, topologyRequirement)
 			}
 		}
@@ -533,7 +535,7 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 				log.Debugf("Volume: %s is provisioned on the datastore: %s ", volumeInfo.VolumeID.Id, datastoreURL)
 			} else {
 				return nil, logger.LogNewErrorCodef(log, codes.Internal,
-					"QueryVolume could not retrieve volume information for volume: %q", volumeInfo.VolumeID.Id)
+					"queryVolume could not retrieve volume information for volume: %q", volumeInfo.VolumeID.Id)
 			}
 		} else {
 			// Retrieve datastoreURL from placementResults.
@@ -1077,6 +1079,18 @@ func (c *controller) ControllerGetCapabilities(ctx context.Context, req *csi.Con
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
+	}
+	var vcSnapshotSupportCheck, csiSnapshotFSSEnabled bool
+	// Report capability only if CSI Snapshot FSS is enabled and VC supports snapshot feature.
+	csiSnapshotFSSEnabled = commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot)
+	if csiSnapshotFSSEnabled {
+		// Check VC support only if internal FSS is enabled.
+		vcSnapshotSupportCheck = common.CheckSnapshotSupport(ctx, c.manager)
+	}
+
+	if csiSnapshotFSSEnabled && vcSnapshotSupportCheck {
+		log.Infof("ControllerGetCapabilities: reporting Snapshot capabilities as snapshot FSS is enabled.")
+		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT)
 	}
 
 	var caps []*csi.ControllerServiceCapability
