@@ -99,9 +99,8 @@ func (vc *VirtualCenter) GetStoragePolicyIDByName(ctx context.Context, storagePo
 
 // PbmCheckCompatibility performs a compatibility check for the given profileID
 // with the given datastores.
-func (vc *VirtualCenter) PbmCheckCompatibility(ctx context.Context,
-	datastores []vimtypes.ManagedObjectReference, profileID string) (pbm.PlacementCompatibilityResult, error) {
-
+func (vc *VirtualCenter) PbmCheckCompatibility(ctx context.Context, datastores []vimtypes.ManagedObjectReference,
+	profileID string) (pbm.PlacementCompatibilityResult, error) {
 	log := logger.GetLogger(ctx)
 	err := vc.ConnectPbm(ctx)
 	if err != nil {
