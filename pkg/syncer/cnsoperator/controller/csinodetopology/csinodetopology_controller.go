@@ -361,6 +361,7 @@ func (r *ReconcileCSINodeTopology) reconcileForGuest(ctx context.Context, reques
 		// Error reading the object - return with err.
 		return reconcile.Result{}, err
 	}
+	// TODO: If the CR status is already at Success, do not reconcile further.
 
 	// Initialize backOffDuration for the instance, if required.
 	var timeout time.Duration

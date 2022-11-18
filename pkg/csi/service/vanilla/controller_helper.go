@@ -237,10 +237,12 @@ func getVCenterAndVolumeManagerForVolumeID(ctx context.Context, controller *cont
 			}
 		} else {
 			// Single vCenter Deployment
-			vCenterConfig, vCenterFound := controller.managers.VcenterConfigs[controller.managers.CnsConfig.Global.VCenterIP]
+			vCenterConfig, vCenterFound := controller.managers.VcenterConfigs[
+				controller.managers.CnsConfig.Global.VCenterIP]
 			if !vCenterFound {
 				return "", nil, logger.LogNewErrorCodef(log, codes.Internal,
-					"could not get vCenter config for the vCenter: %q", controller.managers.CnsConfig.Global.VCenterIP)
+					"could not get vCenter config for the vCenter: %q",
+					controller.managers.CnsConfig.Global.VCenterIP)
 			}
 			vCenter = vCenterConfig.Host
 			if volumeManager, volumeManagerfound =

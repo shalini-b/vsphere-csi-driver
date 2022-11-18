@@ -52,6 +52,7 @@ import (
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/cns-lib/vsphere"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/common"
 	commoncotypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/common/commonco/types"
+	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/common/placementengine"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/logger"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/internalapis/csinodetopology"
 	csinodetopologyv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v2/pkg/internalapis/csinodetopology/v1alpha1"
@@ -104,6 +105,16 @@ var (
 	preferredDatastoresMap = make(map[string][]string)
 	// preferredDatastoresMapInstanceLock guards the preferredDatastoresMap from read-write overlaps.
 	preferredDatastoresMapInstanceLock = &sync.RWMutex{}
+	// topologyVCMapInstanceLock guards the topologyVCMap instance from concurrent writes.
+	topologyVCMapInstanceLock = &sync.RWMutex{}
+	// isMultivCenterCluster is set to true only when the MultiVCenterCSITopology FSS
+	// is enabled and the K8s cluster involves multiple VCs.
+	isMultivCenterCluster bool
+	// nodeManager is an instance of the node interface which exposes functionality related to nodeVMs.
+	nodeManager node.Manager
+	// csiNodeTopologyInformer refers to a shared K8s informer listening on CSINodeTopology instances
+	// in the cluster.
+	csiNodeTopologyInformer *cache.SharedIndexInformer
 )
 
 // nodeVolumeTopology implements the commoncotypes.NodeTopologyService interface. It stores
@@ -139,8 +150,8 @@ type controllerVolumeTopology struct {
 	// isCSINodeIdFeatureEnabled indicates whether the
 	// use-csinode-id feature is enabled or not.
 	isCSINodeIdFeatureEnabled bool
-	// isAcceptPreferredDatatsoresFSSEnabled indicates whether the
-	// accept-preferred-datatsores feature is enabled or not.
+	// isAcceptPreferredDatastoresFSSEnabled indicates whether the
+	// accept-preferred-datastores feature is enabled or not.
 	isTopologyPreferentialDatastoresFSSEnabled bool
 }
 
@@ -177,10 +188,10 @@ func (c *K8sOrchestrator) InitTopologyServiceInController(ctx context.Context) (
 
 				// Get node manager instance.
 				// Node manager should already have been initialized in controller init.
-				nodeManager := node.GetManager(ctx)
+				nodeManager = node.GetManager(ctx)
 
 				// Create and start an informer on CSINodeTopology instances.
-				crInformer, err := startTopologyCRInformer(ctx, config)
+				csiNodeTopologyInformer, err = startTopologyCRInformer(ctx, config)
 				if err != nil {
 					log.Errorf("failed to create an informer for CSINodeTopology instances. Error: %+v", err)
 					return nil, err
@@ -192,10 +203,22 @@ func (c *K8sOrchestrator) InitTopologyServiceInController(ctx context.Context) (
 					return nil, err
 				}
 
+				// Set isMultivCenterCluster if the K8s cluster is a multi-VC cluster.
+				isMultiVCSupportEnabled := c.IsFSSEnabled(ctx, common.MultiVCenterCSITopology)
+				if isMultiVCSupportEnabled {
+					cfg, err := common.GetConfig(ctx)
+					if err != nil {
+						return nil, logger.LogNewErrorf(log, "failed to read config. Error: %+v", err)
+					}
+					if len(cfg.VirtualCenter) > 1 {
+						isMultivCenterCluster = true
+					}
+				}
+
 				controllerVolumeTopologyInstance = &controllerVolumeTopology{
 					k8sConfig:                 config,
 					nodeMgr:                   nodeManager,
-					csiNodeTopologyInformer:   *crInformer,
+					csiNodeTopologyInformer:   *csiNodeTopologyInformer,
 					clusterFlavor:             clusterFlavor,
 					isCSINodeIdFeatureEnabled: c.IsFSSEnabled(ctx, common.UseCSINodeId),
 					isTopologyPreferentialDatastoresFSSEnabled: c.IsFSSEnabled(ctx,
@@ -216,7 +239,11 @@ func (c *K8sOrchestrator) InitTopologyServiceInController(ctx context.Context) (
 						for ; true; <-ticker.C {
 							ctx, log := logger.GetNewContextWithLogger()
 							log.Infof("Refreshing preferred datastores information...")
-							err = refreshPreferentialDatastores(ctx)
+							if isMultiVCSupportEnabled {
+								err = placementengine.RefreshPreferentialDatastores(ctx)
+							} else {
+								err = refreshPreferentialDatastores(ctx)
+							}
 							if err != nil {
 								log.Errorf("failed to refresh preferential datastores in cluster. Error: %v", err)
 								os.Exit(1)
@@ -344,6 +371,21 @@ func refreshPreferentialDatastores(ctx context.Context) error {
 		preferredDatastoresMap = prefDatastoresMap
 	}
 	return nil
+}
+
+// GetCSINodeTopologyInstancesList lists out all the CSINodeTopology
+// instances using the K8s informer cache store.
+func (c *K8sOrchestrator) GetCSINodeTopologyInstancesList() []interface{} {
+	nodeTopologyStore := (*csiNodeTopologyInformer).GetStore()
+	return nodeTopologyStore.List()
+}
+
+// GetCSINodeTopologyInstanceByName fetches the CSINodeTopology instance
+// for a given nodeName using the K8s informer cache store.
+func (c *K8sOrchestrator) GetCSINodeTopologyInstanceByName(nodeName string) (
+	item interface{}, exists bool, err error) {
+	nodeTopologyStore := (*csiNodeTopologyInformer).GetStore()
+	return nodeTopologyStore.GetByKey(nodeName)
 }
 
 // startAvailabilityZoneInformer listens on changes to AvailabilityZone instances and updates the azClusterMap cache.
@@ -504,6 +546,9 @@ func topoCRAdded(obj interface{}) {
 		return
 	}
 	addNodeToDomainNodeMap(ctx, nodeTopoObj)
+	if isMultivCenterCluster {
+		addLabelsToTopologyVCMap(ctx, nodeTopoObj)
+	}
 }
 
 // topoCRUpdated checks if the CSINodeTopology instance Status is set to Success
@@ -551,10 +596,16 @@ func topoCRUpdated(oldObj interface{}, newObj interface{}) {
 			"Success. Old object - %+v. New object - %+v", csinodetopology.CRDSingular, oldNodeTopoObj.Name,
 			oldNodeTopoObj, newNodeTopoObj)
 		removeNodeFromDomainNodeMap(ctx, oldNodeTopoObj)
+		if isMultivCenterCluster {
+			removeLabelsFromTopologyVCMap(ctx, oldNodeTopoObj)
+		}
 	}
 	// Add the node name to the domainNodeMap if the Status is set to Success.
 	if newNodeTopoObj.Status.Status == csinodetopologyv1alpha1.CSINodeTopologySuccess {
 		addNodeToDomainNodeMap(ctx, newNodeTopoObj)
+		if isMultivCenterCluster {
+			addLabelsToTopologyVCMap(ctx, newNodeTopoObj)
+		}
 	}
 }
 
@@ -572,9 +623,55 @@ func topoCRDeleted(obj interface{}) {
 	// Delete node name from domainNodeMap if the status of the CR was set to Success.
 	if nodeTopoObj.Status.Status == csinodetopologyv1alpha1.CSINodeTopologySuccess {
 		removeNodeFromDomainNodeMap(ctx, nodeTopoObj)
+		if isMultivCenterCluster {
+			removeLabelsFromTopologyVCMap(ctx, nodeTopoObj)
+		}
 	} else {
 		log.Infof("topoCRDeleted: %q instance with name %q and status %q deleted.", csinodetopology.CRDSingular,
 			nodeTopoObj.Name, nodeTopoObj.Status.Status)
+	}
+}
+
+// addLabelsToTopologyVCMap adds topology label to VC mapping for given CSINodeTopology instance
+// in the placementengine.TopologyVCMap variable.
+func addLabelsToTopologyVCMap(ctx context.Context, nodeTopoObj csinodetopologyv1alpha1.CSINodeTopology) {
+	log := logger.GetLogger(ctx)
+	nodeVM, err := nodeManager.GetNode(ctx, nodeTopoObj.Spec.NodeUUID, nil)
+	if err != nil {
+		log.Errorf("Node %q is not yet registered in the node manager. Error: %+v",
+			nodeTopoObj.Spec.NodeUUID, err)
+		return
+	}
+	log.Infof("Topology labels %+v belong to %q VC", nodeTopoObj.Status.TopologyLabels,
+		nodeVM.VirtualCenterHost)
+	// Update placementengine.TopologyVCMap with topology label and associated VC host.
+	topologyVCMapInstanceLock.Lock()
+	defer topologyVCMapInstanceLock.Unlock()
+	for _, label := range nodeTopoObj.Status.TopologyLabels {
+		if _, exists := placementengine.TopologyVCMap[label.Value]; !exists {
+			placementengine.TopologyVCMap[label.Value] = map[string]struct{}{nodeVM.VirtualCenterHost: {}}
+		} else {
+			placementengine.TopologyVCMap[label.Value][nodeVM.VirtualCenterHost] = struct{}{}
+		}
+	}
+}
+
+// removeLabelsFromTopologyVCMap removes the topology label to VC mapping for given CSINodeTopology
+// instance in the placementengine.TopologyVCMap variable.
+func removeLabelsFromTopologyVCMap(ctx context.Context, nodeTopoObj csinodetopologyv1alpha1.CSINodeTopology) {
+	log := logger.GetLogger(ctx)
+	nodeVM, err := nodeManager.GetNode(ctx, nodeTopoObj.Spec.NodeUUID, nil)
+	if err != nil {
+		log.Errorf("Node %q is not yet registered in the node manager. Error: %+v",
+			nodeTopoObj.Spec.NodeUUID, err)
+		return
+	}
+	log.Infof("Removing VC %q mapping for TopologyLabels %+v.", nodeVM.VirtualCenterHost,
+		nodeTopoObj.Status.TopologyLabels)
+	topologyVCMapInstanceLock.Lock()
+	defer topologyVCMapInstanceLock.Unlock()
+	for _, label := range nodeTopoObj.Status.TopologyLabels {
+		delete(placementengine.TopologyVCMap[label.Value], nodeVM.VirtualCenterHost)
 	}
 }
 
@@ -691,6 +788,8 @@ func (volTopology *nodeVolumeTopology) GetNodeTopologyLabels(ctx context.Context
 				return nil, logger.LogNewErrorCodef(log, codes.Internal, msg)
 			}
 		} else {
+			// If CSINodeTopology instance already exists, check if the NodeUUID
+			// parameter in Spec is populated. If not, patch the instance.
 			if csiNodeTopology.Spec.NodeUUID == "" ||
 				csiNodeTopology.Spec.NodeUUID != nodeInfo.NodeID {
 				if csiNodeTopology.Spec.NodeUUID == "" {
